@@ -142,3 +142,9 @@ postリクエスト（header jwt body text、フロント側で正規表現で�
 
 postリクエスト(header jwt  body question_id)→repliesテーブルに返信text、question_id, user_idを追加。
 
+
+
+git hub 
+git branch -M main
+git remote add origin https://github.com/ユーザー名/リポジトリ名     ここでorigin  
+git push -u origin main                                            origin 
