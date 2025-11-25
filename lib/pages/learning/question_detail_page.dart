@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:flutter_dotenv/flutter_dotenv.dart';
+
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class QuestionDetailPage extends StatefulWidget {
@@ -23,7 +23,7 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
   @override
   void initState() {
     super.initState();
-    serverUrl = dotenv.env['PROD_SERVER_URL'] ?? 'http://localhost:3000';
+    serverUrl =  'http://localhost:3000';
     // 画面が開いたらすぐに返信一覧を取りに行く
     getReplies();
   }

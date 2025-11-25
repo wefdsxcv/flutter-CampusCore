@@ -2,8 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart'; // 追加: セッション確認用
 import '../../widgets/module_card.dart';
-import 'record_summary_page.dart';
-import 'note_ocr_page.dart';
+
 //import 'code_check_page.dart'; ここをコメントアウト
 import 'question_board_page.dart';
 import '../auth/login_page.dart'; // 追加: 未ログイン時の遷移先

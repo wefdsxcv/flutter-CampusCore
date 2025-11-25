@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:flutter_dotenv/flutter_dotenv.dart';
+
 import 'question_detail_page.dart'; // 詳細画面への遷移用
 
 class TagSearchPage extends StatefulWidget {
@@ -21,7 +21,7 @@ class _TagSearchPageState extends State<TagSearchPage> {
   @override
   void initState() {
     super.initState();
-    serverUrl = dotenv.env['PROD_SERVER_URL'] ?? 'http://localhost:3000';
+    serverUrl =  'http://localhost:3000';
   }
 
   // 🔹 タグ検索実行

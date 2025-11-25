@@ -3,7 +3,7 @@ import 'dart:async'; // TimeoutExceptionのために必要
 import 'package:flutter/material.dart';
 // import 'package:flutter/foundation.dart'; // 切り替えロジックを削除したので不要
 import 'package:http/http.dart' as http;
-import 'package:flutter_dotenv/flutter_dotenv.dart';
+
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'question_detail_page.dart';
 import 'tag_search_page.dart';
@@ -30,7 +30,7 @@ class _QuestionBoardPageState extends State<QuestionBoardPage> {
     
     // ★修正: 本番想定のため、常にRenderのURLを使用するように固定
     // .envの PROD_SERVER_URL を読み込みます。なければダミー(エラーになります)
-    serverUrl = dotenv.env['PROD_SERVER_URL'] ?? 'https://campus-core-api.onrender.com';
+    serverUrl = 'https://campus-core-api.onrender.com';
     
     print('接続先サーバー: $serverUrl'); // デバッグ用にログ出力
 
