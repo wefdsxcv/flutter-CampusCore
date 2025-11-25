@@ -1,7 +1,8 @@
 学校の創成Dという授業で作成したアプリです。andoroidモバイルアプリを考えて開発しました。
 私は質問snsという　yahoo知恵袋の下位互換みたいな機能を担当しました。
 私は質問投稿や情報交換ができるsnsを作りました。対象ユーザーは中部大学生で、中部大学生同士が情報交換できるsnsを目指して設計しました。　主な機能は投稿一覧、投稿、返信一覧、返信、タグ検索　機能です。　　教授名、授業名をタグに含めて投稿することにより、中部大学特化の情報交換snsとして機能することができます。
-　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　認証
+他のメンバーが開発した機能に関してはapikeyを直書き？？してるとかなんとか、どこに書いてあるかもわからなとのことなので、載せません。
+　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　　
 開発の流れ
 node.jsのフォルダ構成について。
 route/ route定義をまとめる　contololler に書いた関数をまとめてimport。route定義をまとめてexport
@@ -148,3 +149,34 @@ git hub
 git branch -M main
 git remote add origin https://github.com/ユーザー名/リポジトリ名     ここでorigin  
 git push -u origin main                                            origin 
+
+
+設計図の世界 (main ブランチ)
+
+ここには Dartのプログラムコード を置きます。
+
+あなたがさっき git push -u origin main でやったのがこれです。これはBuildの前に行うのが正解です。
+
+完成品の世界 (gh-pages ブランチ)
+
+ここには BuildしてできたWebサイト（HTML/JS） を置きます。
+
+これはこれからやる作業です。
+
+git hub page に公開する方法
+flutter pub global activate peanut　ツールを入れる。
+
+エラー
+Aさん（WSL / Ubuntu側）： 以前設定したので、gitの名刺を持っています。
+
+Bさん（Windows / PowerShell側）： まだ設定していないので、名刺を持っていません。
+
+あなたは普段「Aさん（WSL）」として作業していますが、今回実行したコマンドの一部が、裏側で「Bさん（Windows）」としてGitを使おうとしました。 すると、Windows側のGitが**「えっ、Bさんって誰ですか？ 名刺（設定）がないから記録させません！」**と止めてしまったのです。
+PS C:\Users\aigur\CampusCore\campuscore_new> git config --global user.name "ユーザー名"
+PS C:\Users\aigur\CampusCore\campuscore_new> git config --global user.email "メアド"
+でwindows　os　にgitのアカウントを教えている。
+　
+git hub でwebでbuildしてくれている？？
+flutter pub global run peanut --extra-args "--base-href=/flutter-CampusCore/"
+
+
