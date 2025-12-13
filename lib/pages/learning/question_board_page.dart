@@ -27,10 +27,10 @@ class _QuestionBoardPageState extends State<QuestionBoardPage> {
   void initState() {
     super.initState();
     
-    // ★修正: 本番想定のため、常にRenderのURLを使用するように固定
+    // ★本番想定のため、RenderのURLを使用
     serverUrl = 'https://campus-core-api.onrender.com';
     
-    print('接続先サーバー: $serverUrl'); // デバッグ用にログ出力
+    print('接続先サーバー: $serverUrl'); 
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       get_questions(); 
@@ -42,11 +42,26 @@ class _QuestionBoardPageState extends State<QuestionBoardPage> {
     if (!mounted) return;
     setState(() => _isFetching = true);
 
+    // ★修正1: トークンを取得して、サーバーに「誰が見ているか」を伝える
+    final session = Supabase.instance.client.auth.currentSession;
+    final token = session?.accessToken;
+
+    // ヘッダーの準備（ログインしていればトークンを入れる）
+    Map<String, String> headers = {
+      'Content-Type': 'application/json',
+    };
+    if (token != null) {
+      headers['Authorization'] = 'Bearer $token';
+    }
+
     try {
       print('データ取得開始: $serverUrl/questions');
       
-      final response = await http.get(Uri.parse('$serverUrl/questions'))
-          .timeout(const Duration(seconds: 60)); 
+      // ★修正2: headersを追加してリクエスト
+      final response = await http.get(
+        Uri.parse('$serverUrl/questions'),
+        headers: headers, 
+      ).timeout(const Duration(seconds: 60)); 
 
       if (response.statusCode == 200) {
         final List data = jsonDecode(response.body);
@@ -54,13 +69,18 @@ class _QuestionBoardPageState extends State<QuestionBoardPage> {
           _questions = List<Map<String, dynamic>>.from(
             data.map((e) {
               final tags = (e['tags'] as List<dynamic>?)?.cast<String>() ?? [];
-              return { // question id 等すべての情報を配列（リストに保持）
+              
+              return {
                 'id': e['id'],
-                'user_id': e['user_id'], // 【重要】削除権限の判定（自分かどうか）に使うため、ここに追加！
-                'text': e['text'] ?? '', 
+                'user_id': e['user_id'],
+                'text': e['text'] ?? '',
                 'tags': tags,
                 'user_name': e['user_name'] ?? '名無し',
                 'created_at': e['created_at'],
+                
+                // サーバーから受け取った「いいね情報」
+                'like_count': e['like_count'] ?? 0,   // 現在のいいね数
+                'is_liked': e['is_liked'] ?? false,   // 自分がいいね済みか
               };
             }),
           );
@@ -136,10 +156,8 @@ class _QuestionBoardPageState extends State<QuestionBoardPage> {
     }
   }
 
-  // 🔹 ★追加: 投稿削除処理
-  // UIのゴミ箱ボタンから呼ばれる関数
+  // 🔹 投稿削除処理
   Future<void> delete_question(dynamic questionId) async {
-    // 確認ダイアログを表示
     final bool? confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -158,11 +176,10 @@ class _QuestionBoardPageState extends State<QuestionBoardPage> {
       ),
     );
 
-    if (confirm != true) return; // キャンセルなら何もしない
+    if (confirm != true) return; 
 
     setState(() => _isLoading = true);
     
-    // JWT取得（セキュリティトークン）
     final session = Supabase.instance.client.auth.currentSession;
     final token = session?.accessToken;
 
@@ -173,19 +190,15 @@ class _QuestionBoardPageState extends State<QuestionBoardPage> {
     }
 
     try {
-      // 削除リクエスト送信
-      // Node.js側で「トークンの持ち主」と「投稿者」が一致するかチェックされます
       final response = await http.delete(
         Uri.parse('$serverUrl/questions/$questionId'), 
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer $token', // Supabase検証用トークン
+          'Authorization': 'Bearer $token', 
         },
       ).timeout(const Duration(seconds: 60));
 
       if (response.statusCode == 200) {
-        // 成功したらリストから該当の投稿を除去してUI更新
-        // わざわざGETリクエストし直さなくて済むので高速です
         setState(() {
           _questions.removeWhere((q) => q['id'] == questionId);
         });
@@ -202,13 +215,71 @@ class _QuestionBoardPageState extends State<QuestionBoardPage> {
     }
   }
 
+  // 🔹 いいね切り替え処理 (Optimistic UI)
+  Future<void> toggle_like(int index, dynamic questionId) async {
+    // 1. 現在の状態を一時保存
+    final bool originalLiked = _questions[index]['is_liked'];
+    final int originalCount = _questions[index]['like_count'];
+
+    // 2. 画面を【即座に】更新
+    setState(() {
+      final bool newLiked = !originalLiked;
+      _questions[index]['is_liked'] = newLiked;
+      if (newLiked) {
+        _questions[index]['like_count'] = originalCount + 1;
+      } else {
+        _questions[index]['like_count'] = (originalCount - 1) < 0 ? 0 : (originalCount - 1);
+      }
+    });
+
+    // 3. 裏でAPIリクエスト
+    final session = Supabase.instance.client.auth.currentSession;
+    final token = session?.accessToken;
+
+    if (token == null) {
+      // ログインしていない場合は元に戻す
+      setState(() {
+        _questions[index]['is_liked'] = originalLiked;
+        _questions[index]['like_count'] = originalCount;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('ログインしてください')));
+      return;
+    }
+
+    try {
+      final response = await http.post(
+        Uri.parse('$serverUrl/questions/$questionId/like'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $token',
+        },
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        print('いいね同期成功');
+      } else {
+        throw Exception('Server returned ${response.statusCode}');
+      }
+
+    } catch (e) {
+      print('いいね通信エラー: $e');
+      // 4. エラー発生時は元に戻す
+      if (mounted) {
+        setState(() {
+          _questions[index]['is_liked'] = originalLiked;
+          _questions[index]['like_count'] = originalCount;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('通信エラーが発生しました')),
+        );
+      }
+    }
+  }
   
   // ------------------------------------------
   // ① ホーム画面の Widget
   // ------------------------------------------
   Widget _buildHomeView() {
-    // 【判定用】現在ログインしている自分のIDを取得
-    // これを使って「この投稿は自分のものか？」を判定します
     final currentUserId = Supabase.instance.client.auth.currentUser?.id;
 
     return Column(
@@ -242,7 +313,6 @@ class _QuestionBoardPageState extends State<QuestionBoardPage> {
 
         // 質問一覧
         Expanded(
-          // データ取得中はローディング、空ならメッセージ、あればリスト
           child: _isFetching && _questions.isEmpty
             ? const Center(child: CircularProgressIndicator())
             : _questions.isEmpty
@@ -255,9 +325,6 @@ class _QuestionBoardPageState extends State<QuestionBoardPage> {
                     itemBuilder: (context, index) {
                       final q = _questions[index];
                       final tags = q['tags'] as List<String>;
-                      
-                      // ★ここで判定: 自分のIDと投稿のuser_idが一致するか？
-                      // 一致すれば true になり、削除ボタンが表示されます
                       final isMyPost = currentUserId != null && q['user_id'] == currentUserId;
 
                       return Card(
@@ -277,12 +344,10 @@ class _QuestionBoardPageState extends State<QuestionBoardPage> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                // ヘッダー部分（アイコン・名前・削除ボタン）
+                                // ヘッダー（名前・削除）
                                 Row(
-                                  // 名前を左、削除ボタンを右に寄せる配置
                                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                   children: [
-                                    // 左側：アイコンと名前
                                     Row(
                                       children: [
                                         const Icon(Icons.account_circle, size: 20, color: Colors.grey),
@@ -293,14 +358,11 @@ class _QuestionBoardPageState extends State<QuestionBoardPage> {
                                         ),
                                       ],
                                     ),
-                                    
-                                    // 右側：削除ボタン（自分の投稿なら表示）
                                     if (isMyPost)
                                       IconButton(
                                         icon: const Icon(Icons.delete_outline, size: 20, color: Colors.red),
-                                        // ボタンを押したら削除関数を実行
                                         onPressed: () => delete_question(q['id']),
-                                        constraints: const BoxConstraints(), // 余白を詰める設定
+                                        constraints: const BoxConstraints(), 
                                         padding: EdgeInsets.zero,
                                       ),
                                   ],
@@ -310,7 +372,7 @@ class _QuestionBoardPageState extends State<QuestionBoardPage> {
                                 Text(q['text'], style: const TextStyle(fontSize: 16)),
                                 const SizedBox(height: 8),
                                 
-                                // タグ表示
+                                // タグ
                                 if (tags.isNotEmpty)
                                   Wrap(
                                     spacing: 6,
@@ -321,15 +383,46 @@ class _QuestionBoardPageState extends State<QuestionBoardPage> {
                                     )).toList(),
                                   ),
                                   
-                                const SizedBox(height: 4),
-                                const Row(
-                                  mainAxisAlignment: MainAxisAlignment.end,
-                                  children: [
-                                    Icon(Icons.chat_bubble_outline, size: 16, color: Colors.grey),
-                                    SizedBox(width: 4),
-                                    Text('返信', style: TextStyle(color: Colors.grey, fontSize: 12)),
-                                  ],
-                                )
+                                const SizedBox(height: 12),
+                                const Divider(height: 1, color: Colors.grey), 
+
+                                // アクションバー（返信 & いいね）
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 4),
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                                    children: [
+                                      // ❤ いいねボタン
+                                      InkWell(
+                                        onTap: () => toggle_like(index, q['id']),
+                                        borderRadius: BorderRadius.circular(30),
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(8.0),
+                                          child: Row(
+                                            children: [
+                                              // ★ここが赤くなるポイント
+                                              // is_likedがtrueならIcons.favorite(塗りつぶし) & Colors.pink
+                                              Icon(
+                                                q['is_liked'] ? Icons.favorite : Icons.favorite_border,
+                                                size: 20,
+                                                color: q['is_liked'] ? Colors.pink : Colors.grey,
+                                              ),
+                                              const SizedBox(width: 6),
+                                              Text(
+                                                '${q['like_count']}',
+                                                style: TextStyle(
+                                                  color: q['is_liked'] ? Colors.pink : Colors.grey,
+                                                  fontSize: 13,
+                                                  fontWeight: q['is_liked'] ? FontWeight.bold : FontWeight.normal,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
                               ],
                             ),
                           ),

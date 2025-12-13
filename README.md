@@ -105,7 +105,7 @@ CREATE TRIGGER on_auth_user_created
 -- 1. テーブル作成
 -- ---------------------------------------------------
 
--- イイネテーブル　（多対多）中間テーブル   行があるってことはいいねしてるってことね？
+-- イイネテーブル　（多対多）中間テーブル   行があるってことはいいねしてるってこと
 CREATE TABLE likes (
     id SERIAL PRIMARY KEY,
     user_id UUID NOT NULL REFERENCES user_profiles(user_id) ON DELETE CASCADE,　　　誰が、どの投稿にいいねしたか管理する。uqnie制約付き。
@@ -125,6 +125,10 @@ CREATE TABLE notifications (
     is_read BOOLEAN DEFAULT FALSE,                                                 -- 既読　BOOLEAN　true false
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+追加: 高速化のためのインデックス
+-- 「誰宛の通知か？」と「いつ作られたか？」をセットでインデックス化します。
+CREATE INDEX idx_notifications_receiver_created 
+ON notifications(receiver_id, created_at DESC);
 
 -- 質問テーブルに「いいね数」カラムを追加
 ALTER TABLE questions 
@@ -347,6 +351,40 @@ export async function toggleLike(req, res) {
     res.status(500).json({ error: "処理に失敗しました" });
   }
 }
+
+2025/12/10　職務分離usecase repository infra にクライアント生成を
+2025/12/11  通知処理（outbox パターン（redisあり））　を実装していく。
+
+-- 1. Outboxテーブルの作成（通知したかを管理するためだけのテーブル）
+CREATE TABLE IF NOT EXISTS outbox (　　　　　　　　　　　　　　if not exists はまだ同じテーブル名がなかったら、作成。
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),           
+    aggregate_id TEXT,             -- 関連するID（今回は返信ID）
+    type VARCHAR(50) NOT NULL,     -- イベントの種類（'reply_created'など）
+    payload JSONB NOT NULL,        -- 通知に必要なデータ（誰から誰へ、など）
+    status VARCHAR(20) DEFAULT 'pending', -- 'pending' -> 'sent'
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+-- 高速化のためのインデックス
+CREATE INDEX IF NOT EXISTS idx_outbox_status_created ON outbox(status, created_at);
+
+~outboxテーブル説明～
+UUID = 重複しないランダム ID
+
+gen_random_uuid() は Postgres の UUID 自動生成関数
+
+→ Outbox の1件ずつの「イベント」を識別するための ID
+
+＊～indexの理由～＊Worker が「未処理（pending）の行」だけを高速に SELECT する必要があるから
+🔥 Outbox パターンでは「この SELECT がめちゃくちゃ頻発する」
+
+Worker はずっとこんなクエリを投げ続ける：
+
+SELECT * FROM outbox
+WHERE status = 'pending'
+ORDER BY created_at
+LIMIT 1;
+
+
 
 
 
