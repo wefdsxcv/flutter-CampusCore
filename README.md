@@ -115,20 +115,7 @@ CREATE TABLE likes (
     UNIQUE(user_id, question_id) -- 同じ投稿に2回イイネできない制約
 );
 
--- 通知テーブル（将来用）
-CREATE TABLE notifications (
-    id SERIAL PRIMARY KEY,
-    receiver_id UUID NOT NULL REFERENCES user_profiles(user_id) ON DELETE CASCADE, -- 通知を受け取る人
-    sender_id UUID NOT NULL REFERENCES user_profiles(user_id) ON DELETE CASCADE,   -- 通知を送った人
-    question_id INT NOT NULL REFERENCES questions(id) ON DELETE CASCADE,           -- 対象の質問（どの投稿に対する通知か分かるようにするため）　ON DELETE CASCADE → 投稿が消えたら通知も消える
-    type VARCHAR(20) NOT NULL CHECK (type IN ('like', 'reply')),                   -- 種類　CHECK このカラムに入れていい値を制限する
-    is_read BOOLEAN DEFAULT FALSE,                                                 -- 既読　BOOLEAN　true false
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-追加: 高速化のためのインデックス
--- 「誰宛の通知か？」と「いつ作られたか？」をセットでインデックス化します。
-CREATE INDEX idx_notifications_receiver_created 
-ON notifications(receiver_id, created_at DESC);
+
 
 -- 質問テーブルに「いいね数」カラムを追加
 ALTER TABLE questions 
@@ -383,6 +370,114 @@ SELECT * FROM outbox
 WHERE status = 'pending'
 ORDER BY created_at
 LIMIT 1;
+
+＊usecases/reply/postreplyusecase.js　＊
+import { replyRepository } from "../../repositories/replyRepository.js";
+// 質問の投稿者を確認するために必要
+import { questionRepository } from "../../repositories/questionRepository.js"; 
+
+export async function postReplyUsecase(text, questionId, userId) {
+  // 1. 質問情報を取得（通知先＝質問の投稿者 を特定するため）
+  // ※ questionRepository.findById が必要です
+  const { data: questionData, error: qError } = await questionRepository.findById(questionId);
+  
+  if (qError || !questionData) {
+    throw new Error("質問が見つかりません");
+  }
+
+  // 2. Outbox用ペイロードの準備
+  let outboxPayload = null;
+
+  // 「自分の投稿への返信」ではない場合のみ通知データを作る
+  if (questionData.user_id !== userId) {
+    outboxPayload = {
+      type: "reply",
+      senderId: userId,               // 返信した人 (あなた)
+      receiverId: questionData.user_id, // 通知を受け取る人 (質問者)
+      questionId: questionId
+    };
+  }
+
+  // 3. トランザクション実行 (RPC経由)
+  // 返信の保存と、Outboxへの保存が同時に行われます
+  const { data: replyData, error } = await replyRepository.createWithOutbox(
+    text, 
+    questionId, 
+    userId, 
+    outboxPayload
+  );
+
+  if (error) throw error;
+
+  return replyData;
+}
+＊　findById　＊
+// question_idを元に検索。　questionテーブルにはid pk user_id リレーションuserテーブルのidを参照。text varchar2 createdを取得。
+  async findById(id) {
+    return await supabase
+    .from("questions")
+    .select("*")
+    .eq("id", id)
+    .single();　　　single()オブジェクト１件で返す。今回は元投稿は確実に一つのため。普通は配列（配列の中にオブジェクト）でかえって来る。
+  }
+＊replyRepository.js　reateWithOutbox＊
+// ★ [追加] トランザクション付き作成 (返信 + Outbox)
+  // DBの create_reply_with_outbox 関数を呼び出します
+  async createWithOutbox(text, questionId, userId, outboxPayload) {
+    const { data, error } = await supabase.rpc('create_reply_with_outbox', {       rpc関数を呼ぶ。
+      _text: text,　　　＊supabaseのrpc関数の引数が_text　この引数にこの値を渡しますよと明記。引数＊呼び出し元から渡された値を受け取って保持するための変数名を宣言する所。
+      _question_id: questionId,
+      _user_id: userId,
+      _outbox_payload: outboxPayload // 通知不要なら null を渡す
+    });
+
+    if (error) throw error;
+    return { data, error: null }; // insert().select() と形を合わせるため
+  }
+＊★重要: トランザクション用関数 (RPC)　返信テーブルへのinsertとoutboxテーブルへのinsertを同じトランザクション内で実現＊
+-- 返信のINSERTと、OutboxへのINSERTを「ひとまとめ」に行う関数です
+CREATE OR REPLACE FUNCTION create_reply_with_outbox(
+    _text TEXT,
+    _question_id BIGINT,
+    _user_id UUID,
+    _outbox_payload JSONB DEFAULT NULL -- 通知が不要な場合はNULLを許容
+) 
+RETURNS JSONB AS $$
+DECLARE
+    new_reply_id BIGINT;
+    result_data JSONB;
+BEGIN
+    -- A. 返信テーブルへ INSERT
+    INSERT INTO replies (text, question_id, user_id)
+    VALUES (_text, _question_id, _user_id)
+    RETURNING id INTO new_reply_id;
+
+    -- 返信データを取得して結果用変数に入れる（フロントに返すため）
+    SELECT jsonb_build_object(
+        'id', r.id,
+        'text', r.text,
+        'question_id', r.question_id,
+        'user_id', r.user_id,
+        'created_at', r.created_at
+    ) INTO result_data
+    FROM replies r WHERE r.id = new_reply_id;
+
+    -- B. Outboxテーブルへ INSERT (ペイロードがある場合のみ)
+    IF _outbox_payload IS NOT NULL THEN
+        INSERT INTO outbox (aggregate_id, type, payload)
+        VALUES (
+            new_reply_id::TEXT,        -- 関連ID
+            'create_reply_notification', -- イベントタイプ
+            _outbox_payload            -- UseCaseから渡されたデータ
+        );
+    END IF;
+
+    -- 返信データを返す
+    RETURN result_data;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+これで返信テーブルinsert、outboxテーブルinsert　トランザクション
 
 
 
