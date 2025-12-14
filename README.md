@@ -361,15 +361,48 @@ gen_random_uuid() は Postgres の UUID 自動生成関数
 
 → Outbox の1件ずつの「イベント」を識別するための ID
 
-＊～indexの理由～＊Worker が「未処理（pending）の行」だけを高速に SELECT する必要があるから
+＊～indexの理由～＊ outbox Worker が「未処理（pending）の行」だけを高速に SELECT する必要があるから
 🔥 Outbox パターンでは「この SELECT がめちゃくちゃ頻発する」
 
-Worker はずっとこんなクエリを投げ続ける：
+outbox Worker はずっとこんなクエリを投げ続ける：outbox worker　→ outboxテーブルからpendingの行を取って、redisにjobを追加する別起動隊サーバー
 
 SELECT * FROM outbox
-WHERE status = 'pending'
-ORDER BY created_at
-LIMIT 1;
+WHERE status = 'pending'   -- ① pending のやつだけ探す
+ORDER BY created_at ASC    -- ② 古い順に並べる
+LIMIT 1;                   -- ③ 最初の1個だけ取る
+
+②  outbox Worker が処理後にやること
+UPDATE outbox
+SET status = 'sent'
+WHERE id = ?;
+
+インデックスがない場合（Full Table Scan）
+本に例えると「目次がない状態」です。
+
+DBは outbox テーブルの 全ページ（全行） を上から下まで全部見ます。
+
+pending と書かれた行をすべてピックアップします。
+
+ピックアップした行を、メモリ上で created_at の順番に 並べ替え（ソート） します。
+
+やっと1番上のデータを返します。 👉 データが100万件あったら、毎回100万件チェックして並べ替えが発生します。激重です。
+
+＊負荷が増えたらやること＊
+段階① index 追加（安全）
+CREATE INDEX idx_outbox_type_status
+ON outbox(type, status);
+
+段階② JSON をカラムに切り出す
+ALTER TABLE outbox
+ADD COLUMN sender_id uuid,
+ADD COLUMN receiver_id uuid;
+
+段階③ 部分 index
+CREATE INDEX idx_outbox_like_pending
+ON outbox(sender_id)
+WHERE type='create_like_notification'
+  AND status='pending';
+
 
 ＊usecases/reply/postreplyusecase.js　＊
 import { replyRepository } from "../../repositories/replyRepository.js";
@@ -479,6 +512,110 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 これで返信テーブルinsert、outboxテーブルinsert　トランザクション
 
+2025/12/14 いいね処理の関数を見てみると、notificationテーブル（通知用）にinsert 、いいねのトグル（post,delete）をトランザクション内でやっており、現在の通知処理をout boxテーブルにinsert worker 1がoutboxテーブル監視、redisにjob投入、2がredisのjob監視、通知を作成（notificationテーブルに）という流れと完全に違うため　修正必要。
+
+通知は
+誰が（sender）
+誰に（receiver）
+何をしたか（type, target）　　　が最低限必要。
+
+
+～いいね連打による通知対策～
+通知のデバウンス（Debounce）＊
+いいねされても即座に通知を作らず、少し（例えば数分）待つ。
+その間に「いいね解除」されたら、通知は送らない。
+これで「間違って押してすぐ消した」場合や「連打」による通知爆撃を防ぎます。
+通知の集約（Aggregation）＊
+「Aさんがいいねしました」
+「Bさんがいいねしました」
+と個別に送るのではなく、
+「Aさんと他10人があなたの投稿にいいねしました」 とまとめて1通の通知にする。
+再通知の制限＊
+一度いいねして通知を送った後、解除してまたすぐにいいねしても、2回目の通知は送らない（あるいは、一定時間は無視する）。
+
+今回は、 ★デバウンス処理★ 
+    -- Workerがまだ処理していない(pending)通知予約があれば削除する　で実装。
+
+outbox worker はoutboxテーブルにリクエストを送り続けるのでindexを貼る。
+-- 高速化のためのインデックス
+CREATE INDEX IF NOT EXISTS idx_outbox_status_created ON outbox(status, created_at);
+
+～toggle_like～
+CREATE OR REPLACE FUNCTION toggle_like(_user_id uuid, _question_id bigint) 
+RETURNS jsonb AS $$
+DECLARE
+  v_exists boolean;
+  v_question_owner uuid;
+  v_result jsonb;
+BEGIN
+
+  -- 1. 既にいいね済みかチェック
+  SELECT EXISTS(
+      SELECT 1 FROM likes 
+      WHERE user_id=_user_id AND question_id=_question_id
+  ) INTO v_exists;
+
+  IF v_exists THEN 
+    -- ▼▼▼ 【いいね解除 (Unlike) の処理】 ▼▼▼
+    
+    -- A. likes から削除
+    DELETE FROM likes 
+      WHERE user_id=_user_id AND question_id=_question_id;
+    
+    -- B. カウントを減らす
+    UPDATE questions 
+      SET like_count = GREATEST(0, like_count - 1) 
+      WHERE id=_question_id;
+
+    -- C. ★デバウンス処理★ 
+    -- Workerがまだ処理していない(pending)通知予約があれば削除する
+    -- これにより「間違って押してすぐ消した」場合、通知は送信されない
+    DELETE FROM outbox 
+      WHERE aggregate_id = _question_id::TEXT
+      AND type = 'create_like_notification'
+      AND (payload->>'senderId')::UUID = _user_id
+      AND status = 'pending';
+
+    v_result := jsonb_build_object('liked', false);
+
+  ELSE 
+    -- ▼▼▼ 【いいね (Like) の処理】 ▼▼▼
+
+    -- A. likes に追加
+    INSERT INTO likes(user_id, question_id) 
+    VALUES(_user_id, _question_id);
+
+    -- B. 投稿者を特定
+    SELECT user_id FROM questions WHERE id=_question_id INTO v_question_owner;
+
+    -- C. カウントを増やす
+    UPDATE questions 
+      SET like_count = COALESCE(like_count,0) + 1 
+      WHERE id=_question_id;
+
+    -- D. ★Outboxに追加★（自分以外の投稿なら）
+    -- 通知テーブルへのINSERTはここで行わず、Workerに任せる
+    IF v_question_owner IS NOT NULL AND v_question_owner <> _user_id THEN
+      INSERT INTO outbox (aggregate_id, type, payload)
+      VALUES (
+        _question_id::TEXT,
+        'create_like_notification', -- Workerが識別するジョブ名
+        jsonb_build_object(
+            'type', 'like',
+            'senderId', _user_id,
+            'receiverId', v_question_owner,
+            'questionId', _question_id
+        )
+      );　　json（notificationテーブルに入れるための情報を保持。最低限の誰が誰になんの質問でtype,questionId）
+    END IF;
+    
+    v_result := jsonb_build_object('liked', true);
+  END IF;
+
+  RETURN v_result;
+
+END; 
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 
 

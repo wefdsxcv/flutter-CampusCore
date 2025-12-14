@@ -23,7 +23,9 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
   @override
   void initState() {
     super.initState();
-    serverUrl =  'http://localhost:3000';
+    // 本番環境(Render)のURLに変更しました。
+    serverUrl = 'https://campus-core-api.onrender.com';
+    
     // 画面が開いたらすぐに返信一覧を取りに行く
     getReplies();
   }
@@ -159,7 +161,7 @@ class _QuestionDetailPageState extends State<QuestionDetailPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                         Row(
+                          Row(
                           children: [
                             const Icon(Icons.account_circle, size: 20, color: Colors.grey),
                             const SizedBox(width: 8),
