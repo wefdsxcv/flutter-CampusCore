@@ -617,7 +617,170 @@ BEGIN
 END; 
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
+2025/12/15 outbox worker とredisのdockerfile 等　
 
+docker.compose.yaml
+services:
+  redis:
+    image: redis:7
+    container_name: local-redis
+    ports:
+      - "6379:6379"
+
+bullmq install
+npm install bullmq ioredis
+
+2025/12/16  
+同時並行のゴミ箱満タン検知プロジェクトでも通知処理を行う。
+あっちではpostgresql生でやる予定。　SDKとDB生での違いはzennの記事に。
+
+フェーズ2：ローカル開発環境の構築（Docker）
+クラウドに上げる前に、自分のPCで「API」と「Worker」が連携する環境を作ります。
+
+やること:
+
+docker-compose.yml を作成し、redis を立ち上げる。
+
+package.json に bullmq と ioredis をインストールする。
+
+.env ファイルに、ローカルRedisとSupabaseのURLを設定する。
+
+確認方法:
+
+docker-compose up でRedisが正常に起動すること。
+
+フェーズ3：アプリの「役割切り替え」とRelayの実装
+Node.js側で、ドキュメントにある「Relay（監視役）」を作ります。
+
+やること:
+
+main.js で process.env.APP_ROLE による分岐を書く。
+
+Relayロジックの実装（5秒ごとにOutboxテーブルをSELECTし、BullMQのQueueに add し、statusを sent に更新する）。
+
+確認方法:
+
+APP_ROLE=worker でアプリを起動。
+
+DBに手動で pending データを入れ、5秒後にDBの status が sent に変わり、コンソールに「Job added to Redis」と出るか見る。
+
+フェーズ4：Consumer（通知実行役）の実装
+Redisに溜まったジョブを処理する部分を作ります。
+
+やること:
+
+Worker (BullMQ) クラスの実装。
+
+とりあえずは console.log で「〇〇さんに通知を飛ばします」と表示させるだけでOK。
+
+確認方法:
+
+RelayがRedisにジョブを入れた瞬間、Consumerがそれを検知してログを出力するか確認。これでバックエンドのパイプラインが完成します。
+
+フェーズ5：外部連携（FCM & クラウドデプロイ）
+最後に、本物の通知と本物のサーバーへ繋ぎます。
+
+やること:
+
+FCM設定: Firebase Admin SDKを導入し、Consumerの中で実際に通知を飛ばすコードを書く。
+
+Upstash設定: ローカルRedisをUpstashのURLに切り替える。
+
+デプロイ: APIをRenderへ、Worker（Relay+Consumer）をKoyebへデプロイ。
+
+確認方法:
+
+Flutterアプリから「いいね」を押し、数秒後にAndroidの実機に通知が届いたら完全勝利です。
+
+
+2026/04/06
+WorkerもRedisもローカル
+通知発火させたい　APIの中で　redis 追加のAPIを発火
+worker がredis（キュー）にあるタスクを　順（FIFO）で処理。
+
+redis　docker で起動。 
+  -p 6379:6379 \
+  --name redis-test \
+
+ioredis npmライブラリ
+node.js からredis コンテナに接続するための　ライブラリ（ドライバ）
+npm install ioredis
+（bullmqの下位互換。キュー処理を 自分で実装しないといけない  ）
+
+BullMQ は Node.js で非同期処理を安全に、確実に、並列で実行するための仕組み。BullMQ は Worker と Queue をつなぐライブラリ
+Queue（キュー）
+Worker（ワーカー）
+Scheduler（スケジューラー）
+Events（イベント）
+
+npm install bullmq
+
+queeue.js をプロジェクトのルートフォルダに作る。　
+Queue 名（"notification"）は Worker と一致させる。
+
+usecase （いいね発火させたいAPIの途中の中で） notificationQueue.add("sendLikeNotification",  キュー名.add("job名" ) 追加
+
+worker はプロジェクトフォルダ内において、別サーバーとして実行させたい。⇒サーバーが別かどうかは「フォルダ」ではなく「プロセス」で決まる。別の node プロセスとして起動すれば、それは 別サーバーとして動く。
+
+Queue も Worker も Redis に接続する必要がある。
+それぞれ独立したプロセスだから、接続設定も別々に必要。
+
+Queue（Usecase）
+→ Redis に「仕事を追加」するために接続が必要
+
+Worker
+→ Redis から「仕事を取り出す」ために接続が必要
+
+今回は完全ローカルでの学習のための実装のため、addJobTest.jsでキューを追加して、テスト。（本来は通知処理を発火させたいAPIの中でキュー追加するが）
+
+テスト確認。
+2026/04/06終了。　 次回はnode何とかのライブラリを入れてgmail通知を実装。
+
+2026/04/09　
+gmail送りたいので、今回はこれ
+npm install nodemailer
+
+Gmail API（公式）
+
+メール配信サービス
+SendGrid
+Mailgun
+Amazon SES
+
+などを使う。
+
+Nodemailer → Gmail の SMTP サーバーに接続
+→ メールを送信
+→ Gmail が相手に届ける
+
+
+helpから　アプリパスワード発行あった。
+
+アプリパスワードをユーザーに発行してもらって、入力、、、。サービスとして無理。どうすんの？　⇒　SendGrid / Mailgun / Amazon SES　　ＲＥＳＥＮＤ
+
+
+
+
+
+再送処理
+BullMQ は retry（再試行）機能
+キュー.addの時に、追加。
+await notificationQueue.add(
+  "sendLikeNotification",
+  { userId, questionId },
+  {
+    attempts: 3,       // 最大3回再試行
+    backoff: 5000,     // 失敗したら5秒後に再試行
+  }
+);
+
+
+2026/04/13
+nodemailer だとアプリパスワード打って、、、他のユーザ―へのメール送信不可能　⇒　resenｄ使う。
+
+RESEND,SENDGRIDはAPI叩くだけで通知を送れる外部サービス。
+
+今後の開発方針はZENNに記載。
 
 
 andoroid emulateを使う時に、<uses-permission android:name="android.permission.INTERNET" />　　インタネットを許可するため
