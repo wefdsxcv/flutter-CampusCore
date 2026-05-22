@@ -777,7 +777,7 @@ nodemailer だとアプリパスワード打って、、、他のユーザ―へ
 
 RESEND,SENDGRIDはAPI叩くだけで通知を送れる外部サービス。
 
-今後の開発方針はZENNに記載。
+
 
 
 
@@ -798,6 +798,16 @@ const result = await resend.emails.send({
       });
 
       console.log("メール送信完了（Resend）", result);
+
+いいね　通知の流れ　
+usecase で　いいねトグルrpcを呼び出し 処理。　その後、usecase でredis にjob キューを追加。　ローカル（本当はクラウド上で）で常時起動しているworker が　resend サービスを用いて　通知処理発火　して　通知送ったことに　する。　　out box パターン　など　冪等性などは　この段階では　意識できていない。
+
+次はDM
+websocket 
+
+redo me に全ての機能と　要件定義的なのを書いてみて分かるようにして。
+
+開発用メモにファイルを作成し、この内容をコピーしてね。
 
 
 andoroid emulateを使う時に、<uses-permission android:name="android.permission.INTERNET" />　　インタネットを許可するため
