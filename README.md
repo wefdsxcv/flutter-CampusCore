@@ -252,22 +252,6 @@ outbox
 notifications
 ```
 
-## ERイメージ
-
-```text
-User
- ├─ Questions
- │    └─ Replies
- │
- └─ Likes
-
-Questions
- └─ Tags
-      ↑
- QuestionTags
-```
-
----
 
 # 認証フロー
 
